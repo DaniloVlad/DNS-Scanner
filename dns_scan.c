@@ -265,7 +265,7 @@ int main(int argc, char *argv[]) {
     srand(time(NULL));
 
     if(host == NULL) {
-        printf("Using default host\n");
+        printf("Using default domain\n");
         host = (unsigned char *) malloc(50);
         strcpy((char *) host, "..");
     }    
