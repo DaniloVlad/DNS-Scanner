@@ -13,9 +13,9 @@ TO-DO:
 
 -Add other common methods (SSDP, NTP) to work in a single scanner
 
-*Note I have yet to test the spoof scanner as I don't have a known spoofing host, if you do - let me know*
+>*Note I have yet to test the spoof scanner as I don't have a known spoofing host, if you do - let me know*
 
-**dns_listen must be run with sudo priviledes**
+>**dns_listen must be run with sudo priviledes**
 
 
 ## What Is Scanning ?
