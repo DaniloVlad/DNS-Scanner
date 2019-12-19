@@ -30,7 +30,7 @@ Let spoofable server = S, cheap 5$ vps = L, some dns resolver = D
 1) L starts running dns_listen
 2) S starts scanning IP range, sets source address = [VPS IP]
 3) S sends D a query with [VPS IP]
-4) D sends response to [VPS IP]
+4) D sends response to L
 5) L filters and stores lists
 
 The benefit of this, is obscurity. No new traffic is leaving the spoofed server, so there is no new reason for your host to ban you.
