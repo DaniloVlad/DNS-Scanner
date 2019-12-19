@@ -15,6 +15,8 @@ TO-DO:
 
 *Note I have yet to test the spoof scanner as I don't have a known spoofing host, if you do - let me know*
 
+**dns_listen must be run with sudo priviledes**
+
 
 ## What Is Scanning ?
 
@@ -57,7 +59,7 @@ Sending: 29 bytes
 01 00 00 29 FF FF 00 00 
 00 00 00 00 00 
 
-./dns_list
+sudo ./dns_list
 Server: 8.8.8.8 Responded with: 2043 bytes with 5376 records
 
 ```
