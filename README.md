@@ -13,6 +13,9 @@ TO-DO:
 
 -Add other common methods (SSDP, NTP) to work in a single scanner
 
+*Note I have yet to test the spoof scanner as I don't have a known spoofing host, if you do - let me know*
+
+
 ## What Is Scanning ?
 
 Scanning is often done to find DNS resolvers which readily respond to queries, so that they can be used in 
