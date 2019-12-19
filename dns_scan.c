@@ -316,6 +316,12 @@ int main(int argc, char *argv[]) {
     }
     printf("\n");   
 
-    free(host); 
+    if(host) free(host); 
+    if(dns_server) free(dns_server);
+    if(req_ip) free(req_ip);
+    if(buff) free(buff);
+    if(start_ip) free(start_ip);
+    if(end_ip) free(end_ip);
+    
     return 0;
 }
