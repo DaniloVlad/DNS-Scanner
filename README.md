@@ -41,7 +41,7 @@ and you aren't the responsible party. win-win.
 
 EDNS is Extended DNS. The significance of this is previously DNS had a limit of 512 bytes per packet. EDNS modified this allowing users to include information about the size of packets they can handle. This in and of itself made DNS amplification attacks feasible.
 
-Sample Output: 
+## Sample Output: 
 
 ```
 ./dns_scan -h 8.8.8.8
