@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <getopt.h>
 #include <string.h>
 #include <sys/types.h> 
@@ -12,6 +13,12 @@
 #include <time.h>
 #include "dns.h"
 
+typedef struct range {
+    unsigned long start;
+    unsigned long amount;
+    in_addr_t spoof_ip;
+    unsigned char *host;
+} Thread_Data;
 
 unsigned short checksum(const void *buffer, int numWords) {
     //Store sum in long, so that carry bits are not lost.
@@ -26,128 +33,6 @@ unsigned short checksum(const void *buffer, int numWords) {
         sum = (sum >> 16) + (sum & 0xFFFF);
     //return the compliment of the sum
     return (unsigned short) ~sum;
-}
-
-// 3.1. Name space definitions
-// Domain names in messages are expressed in terms of a sequence of labels.
-// Each label is represented as a one octet length field followed by that
-// number of octets. 
-void formatDNSName(unsigned char* dns,unsigned char* host)
-{
-    if(strncmp((const char *) host, ".", 1) == 0) 
-        *dns++ = '\0';
-    
-        
-    else {
-        char *token = strtok((char *) host, ".");
-        do {
-
-            *dns++ = strlen((char *) token);
-            for(int i = 0; i < strlen((const char *) token) ; i++)  
-                *dns++ = token[i];
-
-        } while((token = strtok(NULL, ".")) != NULL);
-    }
-    
-    *dns++ = '\0';
-
-        
-}
-
-void test_csum() {
-    unsigned short tbuf[10] = {0x4500, 0x0073, 0x0000, 0x4000, 0x4011, 0x0000 ,0xc0a8, 0x0001, 0xc0a8, 0x00c7};
-
-    printf("Test checksum: %04X\n", checksum(tbuf, 10));
-
-}
-
-unsigned char *addEDNS(unsigned char *buffer, int *payloadSize) {
-    unsigned char *tmp = NULL;
-    tmp = realloc(buffer, (*payloadSize) + 11);
-
-    if(!tmp) {
-        perror("addEDNS :: Couldn't reallocate buffer");
-    }
-
-    void *edns = (void *) &tmp[*payloadSize + 1];
-    memset(edns, 0x00, 1);
-    memset(edns + 1, 0x29, 1); //set edns RR type code '41'
-    memset(edns + 2, 0xFF, 2); //set edns send UDP Max size
-    memset(edns + 4, 0x00, 7); //set remaining fields to 0
-
-    *payloadSize += 12;
-
-    return tmp;
-}
-
-unsigned char *addQuestion(unsigned char *buffer, int *payloadSize) {
-    unsigned char *tmp = NULL;
-    tmp = realloc(buffer, (*payloadSize) + sizeof(struct QUES));
-
-    if(!tmp) {
-        perror("addQuestion :: Couldn't reallocate buffer");
-        exit(EXIT_FAILURE);
-    }
-
-    struct QUES *question = (struct QUES *)&tmp[*payloadSize];
-    question -> qtype = htons(255);
-    question -> qclass = htons(1);
-
-    *payloadSize += sizeof(struct QUES);
-    return tmp;
-}
-
-unsigned char *addRecord(unsigned char *buffer, unsigned char *query_name, int *payloadSize) {
-
-    unsigned char *tmp = NULL;
-    tmp = realloc(buffer, (*payloadSize) + strlen((const char *) query_name) + 1);
-
-    if(!tmp) {
-        perror("addRecord :: Couldn't reallocate buffer");
-        exit(EXIT_FAILURE);
-    }
-
-    unsigned char *qname = &tmp[*payloadSize];
-    formatDNSName(qname, query_name);
-    *payloadSize += strlen( (const char *) qname) + 1;
-
-    return tmp;
-}
-
-unsigned char *encapsulateDNS(unsigned char *buffer, int *payloadSize) {
-
-    unsigned char *tmp = NULL;
-    tmp = realloc(buffer, (*payloadSize) + sizeof(struct DNS_HDR));
-
-    if(!tmp) {
-        perror("encapsulateDNS :: Couldn't reallocate buffer");
-        exit(EXIT_FAILURE);
-    }
-
-    memcpy(&tmp[sizeof(struct DNS_HDR)], buffer, *payloadSize);
-
-    struct DNS_HDR *dnsh = (struct DNS_HDR *) tmp;
-    dnsh -> id = (unsigned short) htons(rand());
-    dnsh -> qr = 0; //this is a query
-    dnsh -> op = 0;
-    dnsh -> aa = 0;
-    dnsh -> tc = 0;
-    dnsh -> rd = 1; //want resolver to do the resolution
-
-    dnsh -> ra = 0;
-    dnsh -> z = 0;
-    dnsh -> ad = 0;
-    dnsh -> cd = 0;
-    dnsh -> rcode = 0;
-
-    dnsh -> ques_count = htons(1);
-    dnsh -> ans_count = 0;
-    dnsh -> auth_count = 0;
-    dnsh -> add_count = htons(1);
-
-    *payloadSize += sizeof(struct DNS_HDR);
-
-    return tmp;
 }
 
 unsigned char *encapsulateUDP(unsigned char *buffer, int *payloadSize, int dst_port) {
@@ -165,7 +50,7 @@ unsigned char *encapsulateUDP(unsigned char *buffer, int *payloadSize, int dst_p
     udph -> source = htons(rand());
     udph -> dest = htons(dst_port);
     udph -> check = 0; //UDP checksum 0 means checksum unused!
-
+    udph -> len = htons((*payloadSize) + 8);
     *payloadSize += sizeof(struct udphdr);
 
     return tmp;
@@ -187,6 +72,7 @@ unsigned char *encapsulateIP(unsigned char *buffer, int *payloadSize, in_addr_t 
     iph -> ihl = 5; //minimum number of octets
     iph -> tos = 0;
     iph -> tot_len = htons(*payloadSize + sizeof(struct iphdr)); //len = data + header
+    iph -> id = htons(4321);
     iph -> frag_off = 0;
     iph -> ttl = MAXTTL;
     iph -> protocol = IPPROTO_UDP;
@@ -201,11 +87,94 @@ unsigned char *encapsulateIP(unsigned char *buffer, int *payloadSize, in_addr_t 
     return tmp;
 }
 
+void *scan_thread(void *args) {
+
+    //TO-DO: Remove scanning special purpose IP ranges (private IPs)
+    //as per https://www.iana.org/assignments/iana-ipv4-special-registry/iana-ipv4-special-registry.xhtml
+    
+    Thread_Data *td = (Thread_Data *) args;
+
+    unsigned char *buff = NULL;
+    int payloadSize = 0;
+
+    int socket_type = SOCK_DGRAM;
+    int socket_protocol = IPPROTO_UDP;
+
+    //add the record 
+    buff = addRecord(buff, td -> host, &payloadSize);
+    //add the record details
+    buff = addQuestion(buff, &payloadSize);
+    //add extended DNS
+    buff = addEDNS(buff, &payloadSize);
+    //add DNS header around data
+    buff = encapsulateDNS(buff, &payloadSize);
+
+    if(td->spoof_ip) {
+        socket_type = SOCK_RAW;
+        socket_protocol = IPPROTO_RAW;
+        //add UDP header
+        buff = encapsulateUDP(buff, &payloadSize, 53); //port 53 default dns
+        buff = encapsulateIP(buff, &payloadSize, td -> spoof_ip, 0);
+    }
+
+    int sockfd = socket(AF_INET, socket_type, socket_protocol);
+    if(sockfd < 0) {
+        perror("Coudn't create socket");
+        exit(-1);
+    }
+
+    struct sockaddr_in server_addr;
+    for(uint32_t ip = td -> start; ip < td -> start + td -> amount + 1; ip++) {
+
+        memset(&server_addr, 0, sizeof(server_addr));
+
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_addr.s_addr = htonl(ip);
+
+        if(td -> spoof_ip) {
+            //add IP header with spoofed source IP
+            struct iphdr *iph = (struct iphdr *)buff;
+            iph -> daddr = htonl(ip);
+            iph -> check = checksum(iph, iph -> ihl *2);
+            server_addr.sin_port = 0;
+        }
+        else
+            server_addr.sin_port = htons(53);
+        
+        int sent = sendto(sockfd, (char *) buff, payloadSize, 0, (struct sockaddr *) &server_addr, sizeof(server_addr));
+        
+    }
+
+}
+
+int start_scanning(int numThreads, in_addr_t start_ip, in_addr_t end_ip, unsigned char *spoof_ip, unsigned char *host) {
+    unsigned long ips_per_thread = (ntohl(end_ip) - ntohl(start_ip))/numThreads;
+    pthread_t threads[numThreads];
+    printf("IPs per thread: %ld\n", ips_per_thread);
+
+    for(int i = 0; i < numThreads; i++) {
+        Thread_Data *new_td = (Thread_Data *) malloc(sizeof(Thread_Data));
+        new_td -> host = malloc(strlen(host) + 1);
+        strcpy(new_td -> host, host);
+        new_td -> start = (ntohl(start_ip) + i*ips_per_thread);
+        new_td -> amount = ips_per_thread;
+        if(spoof_ip)
+            new_td -> spoof_ip = inet_addr(spoof_ip);
+        else
+            new_td -> spoof_ip = 0;
+
+        pthread_create(&threads[i], NULL, &scan_thread, new_td);
+    }
+
+    for(int j = 0; j < numThreads; j++) pthread_join(threads[j], NULL);
+}
+
+
 int main(int argc, char *argv[]) {
 
     if(argc < 2) {
         printf("Error: Invalid argument length\n");
-        printf("Options:\n\t-h DNS Server IP (single scan)\n\t-d Domain to resolve\n\t-S IP of server with DNS Listener (spoof scan)\n\t-s Start IP (DNS scan range)\n\t-e End IP (DNS scan range)\n\t-t Thread count (optional default = 0)\n");
+        printf("Options:\n\t-h DNS Server IP (single scan)\n\t-d Domain to resolve\n\t-S IP of server with DNS Listener (spoof scan)\n\t-s Start IP (DNS scan range)\n\t-e End IP (DNS scan range)\n\t-t Thread count (optional default = 1)\n\t-l Listener output file (Optional default = 'dns_outfile')(Not for spoof scanning)\n");
         printf("Usage:\n\t%s -h <DNS Server> - Test single server\n\t%s -h <DNS Server> -d <Domain> - Test single domain on single server\n\t%s -h <DNS Server> -d <Domain> -S <Server IP> - Test Single Domain on spoofed listener\n\t%s -s <Start IP> -e <End IP> (-S <Server IP>) - Scan range of IP's (Can also be spoofed)\n", argv[0], argv[0], argv[0], argv[0]);
         return -1;
     }
@@ -213,23 +182,26 @@ int main(int argc, char *argv[]) {
     
     int opt;
     int payloadSize = 0;
-    int thread_count = 0;
+    int thread_count = 1;
 
+    int socket_type = SOCK_DGRAM;
+    int socket_protocol = IPPROTO_UDP;
+
+    char *dns_server = NULL, *listen_file = "dns_outfile";
     unsigned char *host = NULL, 
     *req_ip = NULL, 
-    *dns_server = NULL, 
     *start_ip = NULL, 
     *end_ip = NULL,
     *buff = NULL;
 
-    while((opt = getopt(argc, argv,"h:S:s:e:d:t:")) > 0) {
+    while((opt = getopt(argc, argv,"h:S:s:e:d:t:l:")) > 0) {
 
         switch (opt)
         {
         case 'h': //specifies dns server
 
             printf("Host was specified: %s\n", optarg);
-            dns_server = (unsigned char *) malloc(strlen(optarg) + 1);
+            dns_server = (char *) malloc(strlen(optarg) + 1);
             strcpy((char *) dns_server, optarg);
             break;
         
@@ -257,6 +229,10 @@ int main(int argc, char *argv[]) {
         case 't':
             printf("Using %d Threads\n", atoi(optarg));
             thread_count = atoi(optarg);
+            break;
+        case 'l':
+            listen_file = malloc(strlen(optarg) + 1);
+            strcpy(listen_file, optarg);
         default:
             break;
         }
@@ -275,46 +251,73 @@ int main(int argc, char *argv[]) {
         return -1; 
     }
 
-    //add the record 
-    buff = addRecord(buff, host, &payloadSize);
-    //add the record details
-    buff = addQuestion(buff, &payloadSize);
-    //add extended DNS
-    buff = addEDNS(buff, &payloadSize);
-    //add DNS header around data
-    buff = encapsulateDNS(buff, &payloadSize);
-
+    if(req_ip == NULL) { //spoofing scanning was not selected
+        pthread_t listen_id;
+        pthread_create(&listen_id, NULL, &dns_listen_thread, (void *) listen_file);
+        sleep(2); //wait for thread to init
+    }
     
-    if(req_ip) {
-        //add UDP header
-        buff = encapsulateUDP(buff, &payloadSize, 53); //port 53 default dns
-        //add IP header with spoofed source IP
-        buff = encapsulateIP(buff, &payloadSize, inet_addr((const char *) req_ip), inet_addr((const char *) dns_server));
+    if(start_ip && end_ip) {
+        in_addr_t start, end;
+        inet_pton(AF_INET, start_ip, &start);
+        inet_pton(AF_INET, end_ip, &end); //for ip 255.255.255.255 this returns -1
+        start_scanning(thread_count, start, end, req_ip, host);
     }
+    else {
+        if(!dns_server) {
+            perror("Invalid DNS server!");
+            return -1;
+        }
+        //add the record 
+        buff = addRecord(buff, host, &payloadSize);
+        //add the record details
+        buff = addQuestion(buff, &payloadSize);
+        //add extended DNS
+        buff = addEDNS(buff, &payloadSize);
+        //add DNS header around data
+        buff = encapsulateDNS(buff, &payloadSize);
 
-    int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-    if(sockfd < 0) {
-        perror("Coudn't create socket");
-        return -1;
+        struct sockaddr_in server_addr;
+        memset(&server_addr, 0, sizeof(server_addr));
+
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_port = htons(53);
+        inet_pton(AF_INET, dns_server, &server_addr.sin_addr);
+
+        if(req_ip) {
+            socket_type = SOCK_RAW;
+            socket_protocol = IPPROTO_RAW;
+
+            //add UDP header
+            buff = encapsulateUDP(buff, &payloadSize, 53); //port 53 default dns
+            //add IP header with spoofed source IP
+            buff = encapsulateIP(buff, &payloadSize, inet_addr((const char *) req_ip), inet_addr((const char *) dns_server));
+            server_addr.sin_port = htons(0);
+        }
+
+        int sockfd = socket(AF_INET, socket_type, socket_protocol);
+        if(sockfd < 0) {
+            perror("Coudn't create socket");
+            return -1;
+        }          
+
+        int sent = sendto(sockfd, (char *) buff, payloadSize, 0, (struct sockaddr *) &server_addr, sizeof(server_addr));
+        printf("Sending: %d bytes\n", sent);
+
+        if(sent < 0) {
+            printf("Error sending packet!\n");
+            return -1;
+        }
+        for(int i = 0; i < payloadSize; i++) {
+            if(i%8 == 0) printf("\n");
+            printf("%02X ", buff[i]);
+            
+        }
+        printf("\n");   
+        close(sockfd);
     }
-
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(53);
-    server_addr.sin_addr.s_addr = inet_addr((const char *) dns_server);
-
-    int sent = sendto(sockfd, (char *) buff, payloadSize, 0, (struct sockaddr *) &server_addr, sizeof(server_addr));
-    printf("Sending: %d bytes\n", sent);
-
+    sleep(2); //let the last couple of responses roll in
     
-    for(int i = 0; i < payloadSize; i++) {
-        if(i%8 == 0) printf("\n");
-        printf("%02X ", buff[i]);
-        
-    }
-    printf("\n");   
 
     if(host) free(host); 
     if(dns_server) free(dns_server);
@@ -322,6 +325,6 @@ int main(int argc, char *argv[]) {
     if(buff) free(buff);
     if(start_ip) free(start_ip);
     if(end_ip) free(end_ip);
-    
+
     return 0;
 }

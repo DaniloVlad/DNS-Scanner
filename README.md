@@ -13,7 +13,7 @@ TO-DO:
 
 -Add other common methods (SSDP, NTP) to work in a single scanner
 
->*Note I have yet to test the spoof scanner as I don't have a known spoofing host, if you do - let me know*
+>*Note I have tested the spoofed scanning and it works*
 
 >**dns_listen must be run with sudo priviledes**
 

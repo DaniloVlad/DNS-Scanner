@@ -58,4 +58,11 @@ struct QUES {
     unsigned short qclass;
 } ;
 
+void formatDNSName(unsigned char* dns,unsigned char* host);
+unsigned char *addEDNS(unsigned char *buffer, int *payloadSize);
+unsigned char *addQuestion(unsigned char *buffer, int *payloadSize);
+unsigned char *addRecord(unsigned char *buffer, unsigned char *query_name, int *payloadSize);
+unsigned char *encapsulateDNS(unsigned char *buffer, int *payloadSize);
+
+void *dns_listen_thread(void *args);
 #endif
