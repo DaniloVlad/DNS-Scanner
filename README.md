@@ -5,11 +5,6 @@ Most hosts have a TOS that prevents this kind of thing. People who scan globally
 
 TO-DO:
 
--Finish listener and filter
-
--Finish adding threaded support to scanner
-
--Write attack scripts (maybe not publicly?)
 
 -Add other common methods (SSDP, NTP) to work in a single scanner
 
